@@ -1,0 +1,411 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: VPC-ELB-Route53-EC2-ASG-S3
+
+Parameters:
+  KeyPair:
+    Description: Choose KeyPair for your EC2
+    Type: AWS::EC2::KeyPair::KeyName
+
+  LatestAmiId:
+    Description: Region specific image from the Parameter Store
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2"
+
+  InstanceType:
+    Description: Amazon EC2 Instance type for the Instances
+    Type: String
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t2.medium
+    Default: t2.micro
+
+Resources:
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: d-DVA-vpc
+
+  MyIgw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: d-DVA-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref MyIgw
+
+  LogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: /vpc/flow-logs
+      RetentionInDays: 365
+
+  MyPVCFlowLogs:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref MyVPC
+      ResourceType: VPC
+      TrafficType: ALL
+      LogGroupName: !Ref LogGroup
+      DeliverLogsPermissionArn: !Sub arn:aws:iam::${AWS::AccountId}:role/vpc-flow-logs-role
+      Tags:
+        - Key: Name
+          Value: d-DVA-vpc-flow-logs
+
+  MyPublicSubnet01:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: d-DVA-public-subnet-001
+
+  MyPublicSubnet02:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: d-DVA-public-subnet-002
+
+  MyPrivateSubnet01:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: d-DVA-private-subnet-001
+
+  MyPrivateSubnet02:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.4.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: d-DVA-private-subnet-002
+
+  MyPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: d-DVA-public-route-table
+
+  MyPublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref MyPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref MyIgw
+
+  MyPublicSubnet01RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MyPublicSubnet01
+      RouteTableId: !Ref MyPublicRouteTable
+
+  MyPublicSubnet02RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MyPublicSubnet02
+      RouteTableId: !Ref MyPublicRouteTable
+
+  MyElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  MyNATGateway:
+    Type: "AWS::EC2::NatGateway"
+    Properties:
+      AllocationId: !GetAtt MyElasticIP.AllocationId
+      SubnetId: !Ref MyPublicSubnet01
+
+  MyPrivateRouteTable01:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: d-DVA-private-route-table-01
+
+  MyPrivateRouteTable02:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: d-DVA-private-route-table-02
+
+  MyPrivateRoute01:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref MyPrivateRouteTable01
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref MyNATGateway
+
+  MyPrivateRoute02:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref MyPrivateRouteTable02
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref MyNATGateway
+
+  MyPrivateSubnet01RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MyPrivateSubnet01
+      RouteTableId: !Ref MyPrivateRouteTable01
+
+  MyPrivateSubnet02RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MyPrivateSubnet02
+      RouteTableId: !Ref MyPrivateRouteTable02
+
+  MyALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: d-DVA-elb-sg
+      GroupDescription: The security group for the ALB
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: d-DVA-elb-sg
+
+  MyElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "60"
+      Name: d-DVA-alb
+      Scheme: internet-facing
+      SecurityGroups:
+        - !GetAtt MyALBSecurityGroup.GroupId
+      Subnets:
+        - !Ref MyPublicSubnet01
+        - !Ref MyPublicSubnet02
+      Tags:
+        - Key: Name
+          Value: d-DVA-alb
+
+  MyPublicEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: d-DVA-public-ec2-sg
+      GroupDescription: The security group for the public EC2 instances
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: d-DVA-public-ec2-sg
+
+  MyPrivateEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: d-DVA-private-ec2-sg
+      GroupDescription: The security group for the private EC2 instances
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref MyPublicEC2SecurityGroup
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref MyALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: d-DVA-private-ec2-sg
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+
+  S3AccessPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: S3AccessPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: "*"
+            Resource: "*"
+      Roles:
+        - !Ref InstanceRole
+
+  InstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+      Path: /
+
+  MyLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: d-DVA-launch-template
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyPair
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            Groups:
+              - !Ref MyPrivateEC2SecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y httpd.x86_64
+            systemctl start httpd.service
+            systemctl enable httpd.service
+            echo “Hello World from $(hostname -f)” > /var/www/html/index.html
+
+  MyAutoscalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: d-DVA-asg
+      AvailabilityZones:
+        - !Select [0, !GetAZs ""]
+        - !Select [1, !GetAZs ""]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref MyLaunchTemplate
+        Version: !GetAtt MyLaunchTemplate.LatestVersionNumber
+      TargetGroupARNs:
+        - !Ref MyTargetGroup
+      MaxSize: 4
+      MinSize: 1
+      DesiredCapacity: 2
+      VPCZoneIdentifier:
+        - !Ref MyPrivateSubnet01
+        - !Ref MyPrivateSubnet02
+      Tags:
+        - Key: Name
+          Value: d-DVA-asg
+          PropagateAtLaunch: "true"
+
+  MyBastionHostEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref KeyPair
+      ImageId: ami-079db87dc4c10ac91
+      InstanceType: t2.micro
+      SubnetId: !Ref MyPublicSubnet01
+      SecurityGroupIds:
+        - !Ref MyPublicEC2SecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "Hello from $(hostname -f)" > /var/www/html/index.html
+      Tags:
+        - Key: Name
+          Value: d-DVA-bastion-host-ec2
+
+  MyTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref MyVPC
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: "80"
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: 200
+
+  MyListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MyTargetGroup
+      LoadBalancerArn: !Ref MyElasticLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  MyRoute53RecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Name: "alb.nvquangawsdva.click."
+      HostedZoneName: "nvquangawsdva.click."
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt MyElasticLoadBalancer.DNSName
+        HostedZoneId: !GetAtt MyElasticLoadBalancer.CanonicalHostedZoneID
+
+  MyS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      BucketName: d-dva-s3-bucket
+      Tags:
+        - Key: Name
+          Value: d-dva-s3-bucket
+
+  MyVPCGatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      VpcId: !Ref MyVPC
