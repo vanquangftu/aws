@@ -228,10 +228,6 @@ Resources:
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
           Value: d-DVA-public-ec2-sg
@@ -345,14 +341,6 @@ Resources:
       SubnetId: !Ref MyPublicSubnet01
       SecurityGroupIds:
         - !Ref MyPublicEC2SecurityGroup
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          yum update -y
-          yum install -y httpd
-          systemctl start httpd
-          systemctl enable httpd
-          echo "Hello from $(hostname -f)" > /var/www/html/index.html
       Tags:
         - Key: Name
           Value: d-DVA-bastion-host-ec2
@@ -409,3 +397,6 @@ Resources:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
       VpcEndpointType: Gateway
       VpcId: !Ref MyVPC
+      RouteTableIds:
+        - !Ref MyPrivateRouteTable01
+        - !Ref MyPrivateRouteTable02
